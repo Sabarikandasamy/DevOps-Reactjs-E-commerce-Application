@@ -1,0 +1,70 @@
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = "sabari5008/devops-react-dev"
+        IMAGE_TAG  = "latest"
+        APP_EC2_IP = "YOUR_APP_EC2_PUBLIC_IP"
+        SSH_USER   = "ec2-user"
+    }
+
+    stages {
+
+        stage('Checkout Code') {
+            steps {
+                git branch: 'dev',
+                    url: 'YOUR_GITHUB_REPO_URL'
+            }
+        }
+
+        stage('Build Docker Image (amd64)') {
+            steps {
+                sh '''
+                  docker buildx build \
+                    --platform linux/amd64 \
+                    -t ${IMAGE_NAME}:${IMAGE_TAG} \
+                    --load .
+                '''
+            }
+        }
+
+        stage('Push Image to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh '''
+                      echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                      docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to App EC2') {
+            steps {
+                sshagent(credentials: ['app-ec2-ssh']) {
+                    sh '''
+                      ssh -o StrictHostKeyChecking=no ${SSH_USER}@${APP_EC2_IP} << EOF
+                        docker rm -f react-app || true
+                        docker pull ${IMAGE_NAME}:${IMAGE_TAG}
+                        docker run -d -p 80:80 --name react-app ${IMAGE_NAME}:${IMAGE_TAG}
+                      EOF
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ CI/CD Pipeline executed successfully!"
+        }
+        failure {
+            echo "❌ Pipeline failed. Check logs."
+        }
+    }
+}
+
